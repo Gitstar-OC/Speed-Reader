@@ -8,6 +8,11 @@ import { Slider } from "@/components/ui/slider"
 import { Card } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import {
+  Tooltip as TooltipRoot,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
   Play,
   Pause,
   SkipBack,
@@ -41,41 +46,23 @@ const COLOR_OPTIONS = [
 ]
 
 function Tooltip({ children, text }: { children: React.ReactNode; text: string }) {
-  const [show, setShow] = useState(false)
-  const timeoutRef = useRef<NodeJS.Timeout>()
-
-  const handleTouchStart = () => {
-    timeoutRef.current = setTimeout(() => setShow(true), 500)
-  }
-
-  const handleTouchEnd = () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current)
-    setShow(false)
-  }
-
   return (
-    <div className="relative inline-block">
-      <div
-        onMouseEnter={() => setShow(true)}
-        onMouseLeave={() => setShow(false)}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        onTouchCancel={handleTouchEnd}
-      >
+    <TooltipRoot delayDuration={300}>
+      <TooltipTrigger asChild>
         {children}
-      </div>
-      {show && (
-        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 px-3 py-1.5 bg-foreground/90 text-background text-xs rounded-md shadow-lg whitespace-nowrap z-50 pointer-events-none">
-          {text}
-          <div className="absolute bottom-full left-1/2 -translate-x-1/2 -mb-1 border-4 border-transparent border-b-foreground/90" />
-        </div>
-      )}
-    </div>
+      </TooltipTrigger>
+      <TooltipContent>
+        {text}
+      </TooltipContent>
+    </TooltipRoot>
   )
 }
 
 export default function SpeedReaderPage() {
   const [words, setWords] = useState<string[]>([])
+  const [tokens, setTokens] = useState<string[]>([])
+  const [wordTokenIndices, setWordTokenIndices] = useState<number[]>([])
+  const [tokenToWordIndex, setTokenToWordIndex] = useState<number[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [wpm, setWpm] = useState(300)
@@ -86,8 +73,18 @@ export default function SpeedReaderPage() {
   const [showGuide, setShowGuide] = useState(false)
   const [showMiniview, setShowMiniview] = useState(false)
   const [showWordSelection, setShowWordSelection] = useState(false)
+  const [viewMode, setViewMode] = useState<"reader" | "document">("reader")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const timerRef = useRef<NodeJS.Timeout | null>(null)
+  const activeTokenRef = useRef<HTMLSpanElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!isPlaying && activeTokenRef.current) {
+      activeTokenRef.current.scrollIntoView({ behavior: "smooth", block: "center" })
+    }
+  }, [isPlaying, currentIndex])
+  const [speedVisible, setSpeedVisible] = useState(false)
 
   // Load saved progress from localStorage
   useEffect(() => {
@@ -179,16 +176,30 @@ export default function SpeedReaderPage() {
 
     try {
       const text = await parseFile(file)
-      const wordArray = text.split(/\s+/).filter((word) => word.trim().length > 0)
+      const rawTokens = text.split(/(\s+)/)
+      const validWordIndices: number[] = []
+      const cleanWords: string[] = []
+      const tokenToWordIdx = new Array(rawTokens.length).fill(-1)
 
-      if (wordArray.length > 100000) {
+      rawTokens.forEach((token, index) => {
+        if (token.trim().length > 0) {
+          cleanWords.push(token)
+          validWordIndices.push(index)
+          tokenToWordIdx[index] = cleanWords.length - 1
+        }
+      })
+
+      if (cleanWords.length > 100000) {
         const proceed = confirm(
-          `This file contains ${wordArray.length.toLocaleString()} words. Large files may affect performance. Continue?`,
+          `This file contains ${cleanWords.length.toLocaleString()} words. Large files may affect performance. Continue?`,
         )
         if (!proceed) return
       }
 
-      setWords(wordArray)
+      setWords(cleanWords)
+      setTokens(rawTokens)
+      setWordTokenIndices(validWordIndices)
+      setTokenToWordIndex(tokenToWordIdx)
       setCurrentIndex(0)
       setFileName(file.name)
       setIsPlaying(false)
@@ -218,8 +229,41 @@ export default function SpeedReaderPage() {
 
   // Playback controls
   const togglePlayPause = useCallback(() => {
-    setIsPlaying((prev) => !prev)
+    setIsPlaying((prev) => {
+      const nextState = !prev
+      if (nextState) {
+        // Entering Play Mode
+        if (containerRef.current) {
+             const element = containerRef.current;
+             // Try to enter fullscreen on mobile or generally
+             if (element.requestFullscreen) {
+                element.requestFullscreen().catch((err) => {
+                     console.log("Fullscreen request failed", err)
+                })
+             }
+        }
+      } else {
+         // Exiting Play Mode
+         if (document.fullscreenElement) {
+             document.exitFullscreen().catch((err) => {
+                console.log("Exit fullscreen failed", err)
+             })
+         }
+      }
+      return nextState
+    })
   }, [])
+  
+  // Handle fullscreen change events to sync state if user exits via ESC
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement && isPlaying) {
+          setIsPlaying(false)
+      }
+    }
+    document.addEventListener("fullscreenchange", handleFullscreenChange)
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange)
+  }, [isPlaying])
 
   const goBack = useCallback(() => {
     setCurrentIndex((prev) => Math.max(0, prev - 1))
@@ -236,8 +280,8 @@ export default function SpeedReaderPage() {
 
   const jumpToWord = useCallback((index: number) => {
     setCurrentIndex(index)
-    setIsPlaying(false)
-    setShowWordSelection(false)
+    // setIsPlaying(false) // Don't stop playing if we just jump
+    // setShowWordSelection(false)
   }, [])
 
   // Handle playback timer
@@ -298,13 +342,121 @@ export default function SpeedReaderPage() {
 
   const focusMode = isPlaying && words.length > 0
 
+  useEffect(() => {
+    setSpeedVisible(focusMode)
+  }, [focusMode])
+
+  
+  // -- RENDER HELPERS -- //
+  
+  const renderReaderContent = () => (
+    <div 
+        className={cn(
+            "flex-1 flex flex-col items-center justify-center relative transition-colors duration-300",
+             // Focus Mode Styles (Fullscreen Overlay effect handled by parent container z-index or fullscreen API)
+             focusMode ? "bg-white dark:bg-black text-black dark:text-white" : ""
+        )}
+    >
+        {/* Main Word Display */}
+        <div
+            className="text-center cursor-pointer w-full select-none"
+            onClick={() => !focusMode && setViewMode("document")}
+        >
+            <div
+                className={cn(
+                    "font-serif tracking-tight",
+                    "text-6xl sm:text-7xl md:text-8xl lg:text-9xl", // Big font
+                    focusMode ? "" : "text-foreground"
+                )}
+            >
+                <span>{before}</span>
+                <span style={{ color: focusMode ? highlightColor : highlightColor }}>{highlight}</span>
+                <span>{after}</span>
+            </div>
+            
+             {/* Hint when idle */}
+            {!focusMode && (
+                <div className="mt-8 text-sm text-muted-foreground animate-pulse">
+                    Tap word for context
+                </div>
+            )}
+        </div>
+        
+        {/* Speed Indicator in Focus Mode */}
+        {focusMode && (
+             <div className="absolute bottom-10 left-0 right-0 text-center">
+                 <div className="text-xl md:text-2xl font-light opacity-50">
+                    {wpm} wpm
+                 </div>
+             </div>
+        )}
+    </div>
+  )
+
+  const renderDocumentView = () => (
+      <div className="flex-1 flex flex-col h-full bg-background relative">
+          {/* Header for Document View */}
+          <div className="sticky top-0 z-10 px-4 py-3 border-b border-border/10 bg-background/95 backdrop-blur flex items-center justify-between">
+              <Button variant="ghost" className="gap-2" onClick={() => setViewMode("reader")}>
+                  <ChevronLeft className="h-4 w-4" />
+                  Back to Reader
+              </Button>
+               <span className="text-xs text-muted-foreground">
+                   {currentIndex + 1} / {words.length} ({Math.round(progress)}%)
+               </span>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto px-4 py-8 md:px-12 md:py-12">
+              <div className="max-w-3xl mx-auto font-serif text-lg md:text-xl leading-loose text-foreground/80 tracking-wide selection:bg-primary/20">
+                 {tokens.length > 0 ? tokens.map((token, index) => {
+                     const wordIdx = tokenToWordIndex[index]
+                     const isWord = wordIdx !== -1
+                     const isCurrent = isWord && wordIdx === currentIndex
+                     
+                     return (
+                         <span
+                            key={index}
+                            ref={isCurrent ? activeTokenRef : null}
+                            onClick={() => {
+                                if (isWord) {
+                                  jumpToWord(wordIdx);
+                                  // Optional: Auto switch back to reader? 
+                                  // setViewMode("reader");
+                                }
+                            }}
+                            className={cn(
+                                "transition-colors duration-200 rounded",
+                                isWord ? "cursor-pointer hover:bg-muted/50" : "",
+                                isCurrent ? "bg-yellow-200/50 dark:bg-yellow-900/50 text-foreground font-medium ring-2 ring-yellow-500/20 px-0.5 mx-[-2px]" : ""
+                            )}
+                         >
+                            {token}
+                         </span>
+                     )
+                 }) : (
+                     <p className="whitespace-pre-wrap">{words.join(' ')}</p>
+                 )}
+                 <div className="h-[50vh]" />
+              </div>
+          </div>
+      </div>
+  )
+
   return (
-    <div className={cn("min-h-screen flex flex-col", focusMode ? "bg-black" : "bg-background")}>
-      {!focusMode && (
-        <header className="px-4 py-3 flex items-center justify-between gap-2 border-b border-border/40">
+    <div 
+        ref={containerRef}
+        className={cn(
+            "min-h-screen flex flex-col bg-background transition-colors duration-300",
+            // If in focus mode, force the background
+            focusMode ? "bg-white dark:bg-black" : ""
+        )}
+    >
+      {/* Header - Hidden in Focus Mode */}
+      {!focusMode && viewMode === "reader" && (
+        <header className="px-4 py-3 flex items-center justify-between gap-2 border-b border-border/10 shrink-0">
           <div className="flex items-center gap-2 min-w-0 flex-1">
-            <div className="text-base md:text-lg font-semibold text-foreground/80">SpeedRead</div>
-            {fileName && <div className="text-xs md:text-sm text-muted-foreground truncate">{fileName}</div>}
+            <div className="text-base font-bold tracking-tight">SpeedRead</div>
+            {fileName && <div className="text-sm text-muted-foreground truncate">{fileName}</div>}
           </div>
           <div className="flex items-center gap-1">
             <Tooltip text="Help & Guide">
@@ -318,16 +470,16 @@ export default function SpeedReaderPage() {
               </Button>
             </Tooltip>
             {words.length > 0 && (
-              <Tooltip text="Toggle Context View">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setShowMiniview(!showMiniview)}
-                  className="h-9 w-9 text-muted-foreground hover:text-foreground"
-                >
-                  {showMiniview ? <SidebarClose className="h-4 w-4" /> : <SidebarOpen className="h-4 w-4" />}
-                </Button>
-              </Tooltip>
+                <Tooltip text="Document View">
+                    <Button 
+                        variant="ghost" 
+                        size="icon"
+                        onClick={() => setViewMode("document")}
+                        className="h-9 w-9 text-muted-foreground hover:text-foreground"
+                    >
+                         <SidebarOpen className="h-4 w-4" />
+                    </Button>
+                </Tooltip>
             )}
             <Tooltip text="Settings">
               <Button
@@ -346,7 +498,7 @@ export default function SpeedReaderPage() {
       {/* Guide Modal */}
       {showGuide && (
         <div
-          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 text-foreground/90"
           onClick={() => setShowGuide(false)}
         >
           <Card
@@ -365,99 +517,23 @@ export default function SpeedReaderPage() {
                 <h3 className="font-semibold text-base mb-2">Getting Started</h3>
                 <ul className="list-disc list-inside space-y-1 text-muted-foreground">
                   <li>Drag and drop any file or click "Choose File" to upload</li>
-                  <li>Supported formats: PDF, TXT, Markdown, MOBI, AZW3</li>
-                  <li>Your reading progress is automatically saved</li>
                 </ul>
               </section>
-
               <section>
-                <h3 className="font-semibold text-base mb-2">Reading Experience</h3>
-                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                  <li>Words are displayed one at a time in the center</li>
-                  <li>The highlighted character (in color) is the optimal reading point</li>
-                  <li>Focus on the highlighted character for faster comprehension</li>
-                  <li>Your eyes stay still while words change, reducing eye strain</li>
-                </ul>
-              </section>
-
-              <section>
-                <h3 className="font-semibold text-base mb-2">Keyboard Shortcuts</h3>
-                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                  <li>
-                    <strong>Space</strong> - Play/Pause
-                  </li>
-                  <li>
-                    <strong>Left Arrow</strong> - Previous word
-                  </li>
-                  <li>
-                    <strong>Right Arrow</strong> - Next word
-                  </li>
-                </ul>
-              </section>
-
-              <section>
-                <h3 className="font-semibold text-base mb-2">Customization</h3>
-                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                  <li>Adjust reading speed (100-1000 WPM) with the slider</li>
-                  <li>Change highlight color in Settings</li>
-                  <li>Toggle between Light, Dark, and System theme in Settings</li>
-                  <li>Use Context View to see surrounding words and jump to specific words</li>
-                </ul>
-              </section>
-
-              <section>
-                <h3 className="font-semibold text-base mb-2">Tips for Speed Reading</h3>
-                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                  <li>Start at 250-300 WPM and gradually increase</li>
-                  <li>Focus on comprehension, not just speed</li>
-                  <li>Take breaks every 20-30 minutes</li>
-                  <li>Practice regularly to build your reading speed</li>
-                </ul>
+                 <h3 className="font-semibold text-base mb-2">Modes</h3>
+                 <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                     <li><strong>Reader Mode:</strong> Shows one word at a time. Click the word to see the full document.</li>
+                     <li><strong>Focus Mode:</strong> Plays in fullscreen (Play button). distraction free.</li>
+                     <li><strong>Document View:</strong> Read the full text and context.</li>
+                 </ul>
               </section>
             </div>
           </Card>
         </div>
       )}
 
-      {/* Word Selection Modal */}
-      {showWordSelection && (
-        <div
-          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
-          onClick={() => setShowWordSelection(false)}
-        >
-          <Card
-            className="w-full max-w-4xl p-4 md:p-6 space-y-4 max-h-[90vh] overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg md:text-xl font-bold">Jump to Word</h2>
-              <Button variant="ghost" size="icon" onClick={() => setShowWordSelection(false)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-
-            <div className="text-xs md:text-sm text-muted-foreground mb-2">Click any word to jump to that position</div>
-
-            <div className="flex flex-wrap gap-2 text-xs md:text-sm">
-              {words.map((word, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => jumpToWord(idx)}
-                  className={cn(
-                    "px-2 py-1 rounded transition-colors text-foreground/70 hover:text-foreground hover:bg-muted",
-                    idx === currentIndex && "bg-muted text-foreground font-semibold ring-2 ring-foreground/20",
-                  )}
-                >
-                  {word}
-                </button>
-              ))}
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {showSettings && (
-        <Card className="absolute top-14 right-4 z-50 w-72 md:w-80 p-4 space-y-4 shadow-lg">
+      {showSettings && !focusMode && (
+        <Card className="absolute top-14 right-4 z-50 w-72 md:w-80 p-4 space-y-4 shadow-lg border-none ring-1 ring-border/10">
           <div className="flex items-center justify-between">
             <h3 className="font-semibold">Settings</h3>
             <Button variant="ghost" size="icon" onClick={() => setShowSettings(false)} className="h-8 w-8">
@@ -472,10 +548,10 @@ export default function SpeedReaderPage() {
                 <button
                   key={color.value}
                   className={cn(
-                    "w-full aspect-square rounded-md border-2 transition-all hover:scale-110",
+                    "w-full aspect-square rounded-md transition-all hover:scale-110 ring-1 ring-border",
                     highlightColor === color.value
-                      ? "border-foreground scale-110 ring-2 ring-foreground/30"
-                      : "border-border",
+                      ? "ring-2 ring-foreground scale-110"
+                      : "opacity-80",
                   )}
                   style={{ backgroundColor: color.value }}
                   onClick={() => setHighlightColor(color.value)}
@@ -520,117 +596,49 @@ export default function SpeedReaderPage() {
         </Card>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
-        {!focusMode && showMiniview && words.length > 0 && (
-          <aside className="w-64 md:w-80 border-r border-border/40 overflow-y-auto p-3 md:p-4 space-y-3">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="font-semibold text-xs md:text-sm text-foreground/80">Context View</h3>
-              <span className="text-xs text-muted-foreground">
-                {currentIndex + 1} / {words.length}
-              </span>
-            </div>
-
-            <div className="text-xs text-muted-foreground mb-2">Tap any word to jump</div>
-
-            <div className="flex flex-wrap gap-1.5 text-xs md:text-sm">
-              {getContextWords().map((item) => (
-                <button
-                  key={item.index}
-                  onClick={() => jumpToWord(item.index)}
-                  className={cn(
-                    "px-2 py-0.5 rounded transition-colors text-foreground/60 hover:text-foreground hover:bg-muted",
-                    item.isCurrent && "bg-muted text-foreground font-semibold ring-2 ring-foreground/20",
-                  )}
-                >
-                  {item.word}
-                </button>
-              ))}
-            </div>
-
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full mt-4 bg-transparent"
-              onClick={() => setShowWordSelection(true)}
-            >
-              View All Words
-            </Button>
-          </aside>
-        )}
-
-        {/* Main Content */}
-        <main className="flex-1 flex flex-col items-center justify-center px-4 relative">
-          {words.length === 0 ? (
-            <div
-              className="w-full max-w-2xl border-2 border-dashed border-border/40 rounded-lg p-8 md:p-12 text-center space-y-4 transition-colors hover:border-border"
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-            >
-              <Upload className="h-12 w-12 md:h-16 md:w-16 mx-auto text-muted-foreground" />
-              <div>
-                <h2 className="text-xl md:text-2xl font-semibold mb-2 text-foreground/80">Drop your file here</h2>
-                <p className="text-sm md:text-base text-muted-foreground mb-4">
-                  Supports PDF, TXT, Markdown, MOBI, AZW3
-                </p>
-                <Button onClick={() => fileInputRef.current?.click()} size="lg">
-                  Choose File
-                </Button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pdf,.txt,.md,.markdown,.mobi,.azw,.azw3"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-              </div>
-            </div>
-          ) : (
-            <>
-              <div
-                className="text-center cursor-pointer w-full"
-                onClick={() => !focusMode && setShowWordSelection(true)}
-              >
+      {/* Main Content Area */}
+      {viewMode === "document" && !focusMode ? (
+         renderDocumentView()
+      ) : (
+         <main className="flex-1 flex flex-col relative h-[calc(100vh-theme(spacing.16))]">
+            {words.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center p-8">
                 <div
-                  className={cn(
-                    "font-serif tracking-tight text-6xl sm:text-7xl md:text-8xl lg:text-9xl",
-                    focusMode ? "text-foreground" : "text-foreground",
-                  )}
+                  className="w-full max-w-2xl border-2 border-dashed border-border/20 rounded-xl p-12 text-center space-y-6 transition-colors hover:border-border/50 hover:bg-muted/50"
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
                 >
-                  <span>{before}</span>
-                  <span style={{ color: highlightColor }}>{highlight}</span>
-                  <span>{after}</span>
-                </div>
-              </div>
-
-              {focusMode && (
-                <div className="absolute bottom-8 right-8 text-2xl md:text-3xl font-light text-muted-foreground">
-                  {wpm} wpm
-                </div>
-              )}
-
-              {!focusMode && (
-                <div className="absolute bottom-4 left-4 right-4 space-y-2">
-                  <div className="h-1 bg-muted/50 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-foreground/30 transition-all duration-300"
-                      style={{ width: `${progress}%` }}
+                  <div className="w-20 h-20 bg-muted rounded-full flex items-center justify-center mx-auto mb-6">
+                    <Upload className="h-10 w-10 text-muted-foreground" />
+                  </div>
+                  <div>
+                    <h2 className="text-2xl font-bold mb-2">Drop your file here</h2>
+                    <p className="text-muted-foreground mb-6 max-w-sm mx-auto">
+                      Supports PDF, TXT, Markdown, MOBI, AZW3. content is processed locally in your browser.
+                    </p>
+                    <Button onClick={() => fileInputRef.current?.click()} size="lg" className="rounded-full px-8">
+                      Choose File
+                    </Button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".pdf,.txt,.md,.markdown,.mobi,.azw,.azw3"
+                      onChange={handleFileUpload}
+                      className="hidden"
                     />
                   </div>
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>
-                      {currentIndex + 1} / {words.length} words
-                    </span>
-                    <span>{Math.round(progress)}%</span>
-                  </div>
                 </div>
-              )}
-            </>
-          )}
-        </main>
-      </div>
-
-      {!focusMode && words.length > 0 && (
-        <footer className="border-t border-border/40 px-4 py-3 md:py-4">
+              </div>
+            ) : (
+                renderReaderContent()
+            )}
+         </main>
+      )}
+      
+      {/* Footer Controls - Visible when NOT in Focus Mode and NOT in Document view (or maybe document view too?) */}
+      {/* User requirement: "normal one stopped with all those modifiers... next is play mode... nothing but the word" */}
+      {!focusMode && viewMode === "reader" && words.length > 0 && (
+        <footer className="border-t border-border/10 px-4 py-3 md:py-4 shrink-0">
           <div className="max-w-4xl mx-auto space-y-3 md:space-y-4">
             {/* Playback Controls */}
             <div className="flex items-center justify-center gap-2">
