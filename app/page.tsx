@@ -29,11 +29,11 @@ import {
   ChevronRight,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import * as pdfjsLib from "pdfjs-dist"
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.js"
 
 // Configure PDF.js worker
 if (typeof window !== "undefined") {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/legacy/build/pdf.worker.min.js`
 }
 
 const COLOR_OPTIONS = [
