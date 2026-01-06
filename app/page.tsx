@@ -922,16 +922,6 @@ export default function SpeedReaderPage() {
                 onCheckedChange={setFullscreenOnPlay}
               />
             </div>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-sm">Fullscreen on Play</Label>
-              <Switch
-                checked={fullscreenOnPlay}
-                onCheckedChange={setFullscreenOnPlay}
-              />
-            </div>
             <p className="text-xs text-muted-foreground">
               Automatically enter fullscreen mode when reading starts.
             </p>
